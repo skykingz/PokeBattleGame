@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>TikTok PokéBattle — Vertical 9:16 (OBS/TikFinity)</title>
+<style>
+  :root{ --muted:#9fb2c9; --white:#fff; }
+  html,body{height:100%;margin:0;background:#000;font-family:Inter,system-ui,Arial;color:var(--white);}
+  .canvas{ width:100%; max-width:1080px; margin:0 auto; height:1920px; position:relative; overflow:hidden; background:#000; }
+  .bg{ position:absolute; inset:0; background-size:cover; background-position:center; filter:contrast(0.95) saturate(1.05); }
+  .topbar{ position:absolute; top:28px; left:0; right:0; display:flex; justify-content:center; align-items:center; gap:18px; pointer-events:none; font-weight:800; }
+  .score{ font-size:56px; font-weight:900; color:#fff; padding:6px 10px; }
+  .vsimg{ width:160px; height:80px; object-fit:contain; }
+  .arena{ position:absolute; left:50%; transform:translateX(-50%); top:360px; width:880px; height:720px; display:flex; align-items:center; justify-content:space-between; pointer-events:none; }
+  .side{ width:300px; height:100%; display:flex; flex-direction:column; gap:12px; align-items:center; justify-content:flex-start; }
+  .center-stage{ width:260px; height:100%; display:flex; align-items:center; justify-content:center; position:relative; }
+  .pokemon{ width:260px; height:260px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:160px; transition: transform .36s, opacity .36s; pointer-events:none; }
+  .pokemon.left{ transform:scaleX(-1); } /* flip left */
+  .pokemon.winner{ transform:scale(1.25) translateY(-30px); z-index:20; filter:drop-shadow(0 18px 28px rgba(0,0,0,.7)); }
+  .winner-label{ position:absolute; top:38%; left:50%; transform:translateX(-50%); font-size:62px; color:#ffefc5; text-shadow:0 10px 30px rgba(0,0,0,.8); display:none; }
+  .winner-label.show{ display:block; animation:fadeIn .32s ease-out; }
+  @keyframes fadeIn{ from{opacity:0;transform:translate(-50%,10px)} to{opacity:1;transform:translate(-50%,0)} }
+  .queue{ width:300px; display:flex; flex-direction:column; gap:10px; align-items:center; justify-content:flex-start; margin-top:8px; pointer-events:none; }
+  .slot{ width:260px; height:56px; display:flex; align-items:center; gap:10px; background:rgba(0,0,0,.28); border-radius:12px; padding:8px 12px; box-shadow: inset 0 -2px 0 rgba(255,255,255,.03); }
+  .ball{ width:48px; height:48px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:22px; flex-shrink:0; background:#fff; border:2px solid rgba(0,0,0,.25); }
+  .playername{ font-weight:700; color:var(--white); font-size:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+  .left .slot{ flex-direction:row-reverse; } .left .playername{ text-align:right; margin-right:6px; }
+  .right .slot{ flex-direction:row; } .right .playername{ text-align:left; margin-left:6px; }
+  .fight-ui{ position:absolute; bottom:40px; left:50%; transform:translateX(-50%); width:80%; display:flex; justify-content:center; align-items:center; pointer-events:none; }
+  .fight-cta{ background:linear-gradient(180deg,#ff7a59,#c2392a); color:#fff; font-weight:900; padding:16px 30px; border-radius:12px; font-size:56px; pointer-events:auto; }
+  .info{ position:absolute; left:22px; bottom:22px; color:var(--muted); font-weight:700; font-size:18px; text-shadow:0 4px 10px rgba(0,0,0,.6); }
+  .overlay-topright{ position:absolute; top:16px; right:16px; color:var(--muted); font-size:18px; }
+  .gift-pop{ position:absolute; width:110px; height:110px; pointer-events:none; transform:translate(-50%,-50%); animation:pop .9s ease-out forwards; }
+  @keyframes pop{ 0%{opacity:0; transform:translate(-50%,-80%) scale(.2)} 60%{opacity:1; transform:translate(-50%,-50%) scale(1.06)} 100%{opacity:1; transform:translate(-50%,-50%) scale(1)} }
+  /* responsive tweaks */
+  @media (max-width:420px){ .arena{ width:92%; top:300px; } .pokemon{ width:200px;height:200px;font-size:120px; } .vsimg{ width:120px;height:60px; } }
+</style>
+</head>
+<body>
+  <div class="canvas" id="canvas">
+    <div id="bg" class="bg" aria-hidden="true"></div>
+
+    <div class="topbar">
+      <div class="score" id="leftScore">0</div>
+      <img id="vsImg" src="https://i.imgur.com/kedOf3m.gif" class="vsimg" alt="VS">
+      <div class="score" id="rightScore">0</div>
+    </div>
+
+    <div class="arena" id="arena">
+      <div class="side left" id="leftSide"><div class="queue" id="leftQueue"></div></div>
+
+      <div class="center-stage">
+        <div id="leftPokemon" class="pokemon left"></div>
+        <div id="rightPokemon" class="pokemon right"></div>
+        <div id="winnerLabel" class="winner-label"><img src="https://i.imgur.com/fN0WQay.gif" alt="Winner"></div>
+      </div>
+
+      <div class="side right" id="rightSide"><div class="queue" id="rightQueue"></div></div>
+    </div>
+
+    <div class="fight-ui"><img src="https://i.imgur.com/S6kns7O.gif" class="fight-cta" alt="FIGHT"></div>
+
+    <div class="info" id="info">Waiting for gifts... (Flower or TikTok logo to join)</div>
+    <div class="overlay-topright" id="battlesCount">Battles: 0</div>
+  </div>
+
+<script>
+(() => {
+  // CONFIG
+  const WS_URL = "ws://127.0.0.1:8080"; // change only if TikFinity shows different
+  const MAX_PER_SIDE = 5;
+  const BALLS = [
+    "https://i.imgur.com/v3iLAYY.gif","https://i.imgur.com/Vg77cEb.gif","https://i.imgur.com/g5Ifxvg.gif",
+    "https://i.imgur.com/neCvVr9.gif","https://i.imgur.com/msw84MB.gif","https://i.imgur.com/m3fjDUt.gif",
+    "https://i.imgur.com/GbqpQDN.gif","https://i.imgur.com/d96hbIo.gif","https://i.imgur.com/zfeSJRo.gif",
+    "https://i.imgur.com/5SauLmQ.gif","https://i.imgur.com/Nm2kz2G.gif","https://i.imgur.com/CHt2Hva.gif",
+    "https://i.imgur.com/cPuyHmu.gif","https://i.imgur.com/ZMdh16a.gif","https://i.imgur.com/BOxoBSu.gif"
+  ];
+  const POKEMONS = [
+    "https://i.imgur.com/Vjb76D8.gif","https://i.imgur.com/z8CwXC8.gif","https://i.imgur.com/wewFivm.gif","https://i.imgur.com/zzUiFjx.gif",
+    "https://i.imgur.com/pvUB8g1.gif","https://i.imgur.com/XHZozcm.gif","https://i.imgur.com/2O3R5kl.gif","https://i.imgur.com/zT60VI7.gif",
+    "https://i.imgur.com/z9mO15S.gif","https://i.imgur.com/NVF6lp5.gif","https://i.imgur.com/5dWZRJF.gif","https://i.imgur.com/t1tHf4e.gif",
+    "https://i.imgur.com/d2Y9czU.gif","https://i.imgur.com/u7C9Mhg.gif","https://i.imgur.com/rmr2K5b.gif","https://i.imgur.com/8O9LKhq.gif",
+    "https://i.imgur.com/4Lc7nP7.gif","https://i.imgur.com/Zq1cKGj.gif","https://i.imgur.com/XMsE2VE.gif","https://i.imgur.com/yHONOeP.gif",
+    "https://i.imgur.com/uEC5n3k.gif","https://i.imgur.com/W7WR5hl.gif","https://i.imgur.com/h2JWTYJ.gif","https://i.imgur.com/zrXbVPf.gif",
+    "https://i.imgur.com/3RxbEgb.gif","https://i.imgur.com/q5NfTBO.gif","https://i.imgur.com/Yvuru4p.gif","https://i.imgur.com/yp28ptn.gif",
+    "https://i.imgur.com/zmYshV3.gif","https://i.imgur.com/srGLToY.gif","https://i.imgur.com/CsdwRbt.gif","https://i.imgur.com/o6D9IcK.gif",
+    "https://i.imgur.com/QFUIpuH.gif","https://i.imgur.com/5mbHFnU.gif","https://i.imgur.com/ydbD2aE.gif","https://i.imgur.com/b50ninZ.gif",
+    "https://i.imgur.com/JzzEXTb.gif","https://i.imgur.com/jeFxgE2.gif","https://i.imgur.com/a9KvdOv.gif","https://i.imgur.com/xRvlfAw.gif",
+    "https://i.imgur.com/eYYqwY3.gif","https://i.imgur.com/T9P6Jw7.gif","https://i.imgur.com/wZfPDhH.gif","https://i.imgur.com/yHvnFQp.gif",
+    "https://i.imgur.com/QomGXyz.gif","https://i.imgur.com/pZfLsJf.gif","https://i.imgur.com/a3IliqJ.gif","https://i.imgur.com/L1o7gba.gif",
+    "https://i.imgur.com/1kVRj1s.gif","https://i.imgur.com/EXXCK6Q.gif","https://i.imgur.com/amAsIOl.gif","https://i.imgur.com/Fq1oef5.gif",
+    "https://i.imgur.com/HRYnRM2.gif","https://i.imgur.com/oy0QFu9.gif","https://i.imgur.com/ZbOctSn.gif","https://i.imgur.com/dHFWj79.gif",
+    "https://i.imgur.com/84Lnsvw.gif","https://i.imgur.com/MK9pqLF.gif","https://i.imgur.com/zFVLRtP.gif","https://i.imgur.com/pJfaGc4.gif",
+    "https://i.imgur.com/1LFAFMQ.gif","https://i.imgur.com/zjUWr5v.gif","https://i.imgur.com/nEEYrea.gif","https://i.imgur.com/qtbbJql.gif",
+    "https://i.imgur.com/ueeSqBM.gif","https://i.imgur.com/s0YqHG1.gif","https://i.imgur.com/j08aL4f.gif","https://i.imgur.com/DIqvxRx.gif",
+    "https://i.imgur.com/OErrrW4.gif","https://i.imgur.com/jXCf224.gif","https://i.imgur.com/wHB8ndO.gif","https://i.imgur.com/d9wh7as.gif",
+    "https://i.imgur.com/6MjkKKI.gif","https://i.imgur.com/LaAqFZD.gif","https://i.imgur.com/fpv3okj.gif"
+  ];
+  const BACKGROUNDS = [
+    "https://i.imgur.com/fjhjvLs.gif","https://i.imgur.com/Z7WNZxs.gif","https://i.imgur.com/AqcqRw9.gif",
+    "https://i.imgur.com/NNDK9mX.gif","https://i.imgur.com/nWeyx1v.gif","https://i.imgur.com/JmVre3u.gif",
+    "https://i.imgur.com/vHdpBzD.gif","https://i.imgur.com/dkHtFYq.gif"
+  ];
+  const GIF_FLOWER = "https://i.imgur.com/4K6xD6a.png";
+  const GIF_TIKTOK = "https://i.imgur.com/EVWl8HJ.png";
+  const TEXTS = {
+    fight: "https://i.imgur.com/S6kns7O.gif",
+    nextround: "https://i.imgur.com/KBsFDRd.gif",
+    ready: "https://i.imgur.com/s6XgNvG.gif",
+    tie: "https://i.imgur.com/F28dQIv.gif",
+    vs: "https://i.imgur.com/kedOf3m.gif",
+    winner: "https://i.imgur.com/fN0WQay.gif"
+  };
+  const BG_CHANGE_EVERY_BATTLES = 10; // change background every N battles
+  // STATE
+  const leftQueue = []; const rightQueue = [];
+  let nextAssign = 'left';
+  let activeMatch = null;
+  let battles = 0;
+  const scores = { left:0, right:0 };
+  let bgIndex = 0;
+
+  // DOM refs
+  const leftQueueEl = document.getElementById('leftQueue');
+  const rightQueueEl = document.getElementById('rightQueue');
+  const leftPokemonEl = document.getElementById('leftPokemon');
+  const rightPokemonEl = document.getElementById('rightPokemon');
+  const leftScoreEl = document.getElementById('leftScore');
+  const rightScoreEl = document.getElementById('rightScore');
+  const bgEl = document.getElementById('bg');
+  const infoEl = document.getElementById('info');
+  const battlesCountEl = document.getElementById('battlesCount');
+  const winnerLabelEl = document.getElementById('winnerLabel');
+  const vsImg = document.getElementById('vsImg');
+
+  // set VS image
+  vsImg.src = TEXTS.vs;
+
+  // set background
+  function setBg(i){ bgIndex = i % BACKGROUNDS.length; bgEl.style.backgroundImage = `url(${BACKGROUNDS[bgIndex]})`; }
+  setBg(0);
+
+  // helpers
+  function randInt(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
+  function sanitize(n){ return (n||'Guest').toString().slice(0,18); }
+
+  function createSlotEl(p, side){
+    const slot = document.createElement('div'); slot.className = 'slot';
+    const ball = document.createElement('img'); ball.className='ball'; ball.src = p.ball; ball.alt='ball';
+    ball.style.width='48px'; ball.style.height='48px';
+    const name = document.createElement('div'); name.className='playername'; name.textContent = p.username;
+    if(side==='left'){ slot.classList.add('left'); slot.appendChild(ball); slot.appendChild(name); } 
+    else { slot.classList.add('right'); slot.appendChild(ball); slot.appendChild(name); }
+    return slot;
+  }
+
+  function renderQueues(){
+    leftQueueEl.innerHTML=''; rightQueueEl.innerHTML='';
+    leftQueue.forEach(p => leftQueueEl.appendChild(createSlotEl(p,'left')));
+    rightQueue.forEach(p => rightQueueEl.appendChild(createSlotEl(p,'right')));
+  }
+
+  function findPlayer(username){
+    username = sanitize(username).toLowerCase();
+    let idx = leftQueue.findIndex(p=>p.username.toLowerCase()===username);
+    if(idx>=0) return { side:'left', player:leftQueue[idx], idx };
+    idx = rightQueue.findIndex(p=>p.username.toLowerCase()===username);
+    if(idx>=0) return { side:'right', player:rightQueue[idx], idx };
+    return null;
+  }
+
+  function addPlayer(username){
+    const clean = sanitize(username);
+    if(findPlayer(clean)) { infoEl.textContent = `${clean} already in queue`; return null; }
+    // assign side alternating; if full try other side
+    let side = nextAssign;
+    nextAssign = nextAssign === 'left' ? 'right' : 'left';
+    if((side==='left' && leftQueue.length>=MAX_PER_SIDE) || (side==='right' && rightQueue.length>=MAX_PER_SIDE)){
+      const other = side==='left' ? 'right' : 'left';
+      if((other==='left' && leftQueue.length>=MAX_PER_SIDE) || (other==='right' && rightQueue.length>=MAX_PER_SIDE)){
+        infoEl.textContent = `${clean} tried to join but both sides full`; return null;
+      } else side = other;
+    }
+    const p = { username: clean, ball: BALLS[randInt(0,BALLS.length-1)], joinedAt:Date.now(), active:false, waiting:false, pokemon:null, preGift:null };
+    if(side==='left') leftQueue.push(p); else rightQueue.push(p);
+    renderQueues();
+    infoEl.textContent = `${clean} joined ${side}`;
+    return { side, p };
+  }
+
+  function removePlayer(username){
+    const f = findPlayer(username);
+    if(!f) return false;
+    if(f.side === 'left') leftQueue.splice(f.idx,1); else rightQueue.splice(f.idx,1);
+    renderQueues();
+    return true;
+  }
+
+  function spawnPokemon(username){
+    const f = findPlayer(username);
+    if(!f) return null;
+    const p = f.player;
+    if(p.active) return p;
+    p.active = true; p.waiting = true;
+    p.pokemon = POKEMONS[randInt(0,POKEMONS.length-1)];
+    // attach image to correct side
+    if(f.side==='left'){ leftPokemonEl.innerHTML=''; const img=document.createElement('img'); img.src=p.pokemon; img.style.width='100%'; img.style.height='100%'; leftPokemonEl.appendChild(img); leftPokemonEl.classList.remove('winner'); }
+    else { rightPokemonEl.innerHTML=''; const img=document.createElement('img'); img.src=p.pokemon; img.style.width='100%'; img.style.height='100%'; rightPokemonEl.appendChild(img); rightPokemonEl.classList.remove('winner'); }
+    infoEl.textContent = `${p.username} popped a Pokémon`;
+    // show "ready" text briefly above
+    showFloatingText(TEXTS.ready, f.side);
+    attemptMatchStart();
+    return p;
+  }
+
+  function showFloatingText(url, side){
+    const el = document.createElement('img'); el.src=url; el.className='gift-pop'; 
+    // position near side center
+    const rect = document.getElementById(side+'Side').getBoundingClientRect();
+    const canvasRect = document.getElementById('canvas').getBoundingClientRect();
+    // compute approximate center of side area relative to canvas
+    const cx = (rect.left + rect.right)/2 - canvasRect.left;
+    const cy = (rect.top + rect.bottom)/2 - canvasRect.top - 80;
+    el.style.left = (cx) + 'px'; el.style.top = (cy) + 'px';
+    document.getElementById('canvas').appendChild(el);
+    setTimeout(()=> { try{ el.remove(); }catch(e){} }, 1200);
+  }
+
+  function attemptMatchStart(){
+    if(activeMatch) return;
+    const leftP = leftQueue.find(p=>p.active && p.waiting);
+    const rightP = rightQueue.find(p=>p.active && p.waiting);
+    if(leftP && rightP) startMatch(leftP, rightP);
+  }
+
+  function startMatch(leftP, rightP){
+    activeMatch = { leftP, rightP, gifts:{left:null,right:null}, timer:null };
+    infoEl.textContent = `Match: ${leftP.username} vs ${rightP.username} — 5s to gift!`;
+    // show fight text
+    showFloatingText(TEXTS.fight, 'center');
+    // clear waiting flags
+    leftP.waiting = false; rightP.waiting = false;
+    activeMatch.timer = setTimeout(()=> concludeMatch('timeout'), 5000);
+  }
+
+  function recordGiftDuringMatch(username, value){
+    if(!activeMatch) return;
+    username = sanitize(username).toLowerCase();
+    if(username === activeMatch.leftP.username.toLowerCase()) activeMatch.gifts.left = value;
+    if(username === activeMatch.rightP.username.toLowerCase()) activeMatch.gifts.right = value;
+    if(activeMatch.gifts.left !== null && activeMatch.gifts.right !== null){
+      clearTimeout(activeMatch.timer); concludeMatch('both');
+    }
+  }
+
+  function concludeMatch(reason){
+    if(!activeMatch) return;
+    const L = activeMatch.leftP, R = activeMatch.rightP;
+    let winner=null, loser=null, tie=false;
+    if(reason==='both'){
+      const lv = activeMatch.gifts.left||0, rv=activeMatch.gifts.right||0;
+      if(lv>rv){ winner=L; loser=R; } else if(rv>lv){ winner=R; loser=L; } else tie=true;
+    } else if(reason==='timeout'){
+      const lv = activeMatch.gifts.left, rv = activeMatch.gifts.right;
+      if(lv===null && rv===null) tie=true;
+      else if(lv!==null && rv===null){ winner=L; loser=R; }
+      else if(rv!==null && lv===null){ winner=R; loser=L; }
+      else {
+        // both values present - compare
+        const lv2 = lv||0, rv2 = rv||0;
+        if(lv2>rv2){ winner=L; loser=R; } else if(rv2>lv2){ winner=R; loser=L; } else tie=true;
+      }
+    } else tie=true;
+
+    if(tie){
+      infoEl.textContent = `Tie: ${L.username} vs ${R.username}`;
+      showFloatingText(TEXTS.tie, 'center');
+    } else {
+      const side = leftQueue.includes(winner) ? 'left' : 'right';
+      scores[side] += 1; updateScores();
+      infoEl.textContent = `${winner.username} wins vs ${loser.username}`;
+      // animate winner
+      if(side==='left'){ leftPokemonEl.classList.add('winner'); } else { rightPokemonEl.classList.add('winner'); }
+      winnerLabelEl.classList.add('show'); 
+      // show winner gif inside label
+      winnerLabelEl.innerHTML = '<img src="'+TEXTS.winner+'" alt="winner">';
+      // show next round text after short delay
+      setTimeout(()=> { winnerLabelEl.classList.remove('show'); }, 5000);
+    }
+
+    // after 5.2s, cleanup players (remove both from queues and free slots)
+    setTimeout(()=> {
+      // remove both players (winner or loser both removed per your rule)
+      removePlayer(L.username);
+      removePlayer(R.username);
+      // clear pokemon visuals
+      leftPokemonEl.innerHTML=''; rightPokemonEl.innerHTML='';
+      leftPokemonEl.classList.remove('winner'); rightPokemonEl.classList.remove('winner');
+      activeMatch = null;
+      battles += 1; battlesCountEl.textContent = `Battles: ${battles}`;
+      if(battles % BG_CHANGE_EVERY_BATTLES === 0) rotateBg();
+      // show Next Round text briefly
+      showFloatingText(TEXTS.nextround, 'center');
+    }, 5200);
+  }
+
+  function rotateBg(){ setBg(bgIndex+1); }
+
+  function updateScores(){ leftScoreEl.textContent = scores.left; rightScoreEl.textContent = scores.right; }
+
+  // WS connection handling
+  let ws = null;
+  function connectWS(){
+    try {
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => { console.log('WS open'); infoEl.textContent = 'Connected to TikFinity WS'; };
+      ws.onclose = () => { console.log('WS closed'); infoEl.textContent = 'TikFinity WS disconnected — reconnecting...'; setTimeout(connectWS,3000); };
+      ws.onerror = (e) => { console.warn('WS error', e); };
+      ws.onmessage = (m) => {
+        let payload = null;
+        try { payload = JSON.parse(m.data); } catch(e){ console.warn('WS non-json', m.data); return; }
+        handleIncoming(payload);
+      };
+    } catch(e){
+      console.warn('WS connect failed', e);
+    }
+  }
+  // auto connect
+  if(WS_URL && WS_URL.length) connectWS();
+
+  function handleIncoming(obj){
+    // normalize: accept {event:"gift", username:"x", giftName:"rose", value:1}
+    const evt = (obj.event || obj.type || obj.name || '').toString().toLowerCase();
+    // attempt to detect gift
+    let isGift = false;
+    if(evt.includes('gift') || obj.gift || obj.giftName || obj.gift_key || obj.key) isGift = true;
+    if(!isGift) return;
+    // get username & name & value
+    const username = obj.username || obj.user || (obj.sender && obj.sender.nick) || obj.nick || 'Guest';
+    const giftName = (obj.giftName || obj.gift || obj.gift_key || obj.key || '').toString().toLowerCase();
+    const value = Number(obj.value || obj.price || obj.diamond || obj.amount || 1) || 1;
+    processGift({ username, giftName, value });
+  }
+
+  // determine join gifts (flower or tiktok)
+  function isJoinGift(giftKey){
+    const k = (giftKey||'').toLowerCase();
+    return (k.includes('rose') || k.includes('flower') || k.includes('tiktok') || k.includes('logo'));
+  }
+
+  function processGift({ username, giftName, value }){
+    const u = sanitize(username);
+    if(isJoinGift(giftName)){
+      // add player if slots available
+      addPlayer(u);
+      // spawn a quick gift popup near side if added
+      const f = findPlayer(u);
+      if(f) showFloatingGift(f.side, giftName);
+      return;
+    }
+    // else — battle-type gift: if user in queue, spawn or record gift
+    const fnd = findPlayer(u);
+    if(!fnd){ infoEl.textContent = `${u} gifted but is not in queue`; return; }
+    const { side, player } = fnd;
+    // if not active -> spawn pokemon (this gift triggers pop-in & counts as preGift)
+    if(!player.active){
+      spawnPokemon(u);
+      player.preGift = value;
+      return;
+    }
+    // if active and in an activeMatch, record gift for the fight
+    if(activeMatch && (activeMatch.leftP.username.toLowerCase()===u.toLowerCase() || activeMatch.rightP.username.toLowerCase()===u.toLowerCase())){
+      recordGiftDuringMatch(u, value);
+      showFloatingGift(side, giftName);
+      return;
+    }
+    // else if active but not in match, treat as preGift (they may face opponent soon)
+    player.preGift = value;
+    infoEl.textContent = `${u} gifted while waiting (preGift:${value})`;
+    showFloatingGift(side, giftName);
+  }
+
+  function showFloatingGift(side, giftKey){
+    const url = (giftKey && giftKey.includes('tiktok')) ? GIF_TIKTOK : GIF_FLOWER;
+    const el = document.createElement('img'); el.src = url; el.className='gift-pop';
+    // position near side center
+    const rect = document.getElementById(side+'Side').getBoundingClientRect();
+    const canvasRect = document.getElementById('canvas').getBoundingClientRect();
+    const cx = (rect.left + rect.right)/2 - canvasRect.left;
+    const cy = (rect.top + rect.bottom)/2 - canvasRect.top - 80;
+    el.style.left = (cx)+'px'; el.style.top = (cy)+'px';
+    document.getElementById('canvas').appendChild(el);
+    setTimeout(()=> el.remove(), 1400);
+  }
+
+  // TEST helper for console
+  window.simulateGift = function({ username='Guest', giftKey='rose', value=1 } = {}){
+    handleIncoming({ event:'gift', username, giftName: giftKey, value });
+  };
+
+  // initial render
+  renderQueues(); updateScores(); battlesCountEl.textContent = `Battles: ${battles}`;
+  infoEl.textContent = 'Ready — send Flower or TikTok gift to join. Use window.simulateGift(...) to test.';
+})();
+</script>
+</body>
+</html>
